@@ -9,7 +9,9 @@ import logging
 import os
 import re
 import json
-from typing import Dict, Any, Optional, Tuple, List, Literal
+import uuid
+import time
+from typing import Dict, Any, Optional, Tuple, List, Literal, Callable, Union
 
 from fastapi import Request
 from slack_bolt import App
@@ -78,7 +80,8 @@ class PRAgent:
         model_name: str = "claude-3-5-sonnet-latest",
         default_repo: str = None,
         default_org: str = None,
-        slack_app: Optional[App] = None
+        slack_app: Optional[App] = None,
+        tmp_dir: str = "/tmp/codegen"
     ):
         """
         Initialize the PR Agent.
@@ -90,6 +93,7 @@ class PRAgent:
             default_repo: Default repository name
             default_org: Default organization name
             slack_app: Slack app instance (optional)
+            tmp_dir: Temporary directory for cloning repositories
         """
         self.github_token = github_token
         self.model_provider = model_provider
@@ -97,12 +101,14 @@ class PRAgent:
         self.default_repo = default_repo
         self.default_org = default_org
         self.slack_app = slack_app
+        self.tmp_dir = tmp_dir
         
         # Initialize components
         self.codebase_analyzer = CodebaseAnalyzer(
             model_provider=model_provider,
             model_name=model_name,
-            github_token=github_token
+            github_token=github_token,
+            tmp_dir=tmp_dir
         )
         self.github_handler = GitHubHandler(github_token=github_token)
         self.response_formatter = ResponseFormatter()
@@ -121,6 +127,7 @@ class PRAgent:
         self.pr_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.pr_patterns]
         
         # Initialize codegen app if slack_app is provided
+        self.codegen_app = None
         if slack_app:
             self.setup_codegen_app()
         
@@ -139,7 +146,8 @@ class PRAgent:
             # Initialize the Codegen app
             self.codegen_app = CodegenApp(
                 name="pr-agent",
-                repo=f"{self.default_org}/{self.default_repo}" if self.default_org and self.default_repo else None
+                repo=f"{self.default_org}/{self.default_repo}" if self.default_org and self.default_repo else None,
+                tmp_dir=self.tmp_dir
             )
             
             # Set up event handlers
@@ -185,40 +193,71 @@ class PRAgent:
                 
                 return result
             else:
-                # Handle other types of requests
-                codebase = cg.get_codebase()
-                agent = CodeAgent(codebase=codebase)
-                response = agent.run(text)
-                
-                cg.slack.client.chat_postMessage(
-                    channel=channel,
-                    text=response,
-                    thread_ts=thread_ts
-                )
-                
-                return {"message": "Mentioned", "received_text": text, "response": response}
+                # Try to get the codebase
+                try:
+                    # Extract repository name from the text
+                    repo_name = self._extract_repo_name_from_text(text)
+                    if repo_name == "default_repo" and self.default_org and self.default_repo:
+                        repo_name = f"{self.default_org}/{self.default_repo}"
+                    
+                    # Initialize the codebase
+                    codebase = self.codebase_analyzer.get_codebase(repo_name)
+                    
+                    # Create a code agent
+                    agent = CodeAgent(codebase=codebase)
+                    
+                    # Run the agent
+                    response = agent.run(text)
+                    
+                    # Send the response
+                    cg.slack.client.chat_postMessage(
+                        channel=channel,
+                        text=response,
+                        thread_ts=thread_ts
+                    )
+                    
+                    return {"message": "Mentioned", "received_text": text, "response": response}
+                except Exception as e:
+                    logger.error(f"Error processing mention: {str(e)}")
+                    
+                    # Fallback to a simple response
+                    cg.slack.client.chat_postMessage(
+                        channel=channel,
+                        text=f"Hi <@{user}>! I'm a PR creation bot. To create a PR, mention me with 'create PR' or 'create pull request' followed by your request.",
+                        thread_ts=thread_ts
+                    )
+                    
+                    return {"message": "Not a PR creation request", "error": str(e)}
         
         @cg.github.event("pull_request:labeled")
         def handle_pr(event: PullRequestLabeledEvent):
             logger.info("PR labeled")
             logger.info(f"PR head sha: {event.pull_request.head.sha}")
             
-            codebase = cg.get_codebase()
-            logger.info(f"Codebase: {codebase.name} codebase.repo: {codebase.repo_path}")
-            
-            # Check out commit
-            logger.info("> Checking out commit")
-            codebase.checkout(commit=event.pull_request.head.sha)
-            
-            # Analyze the PR
-            logger.info("> Analyzing PR")
-            self.analyze_pr(codebase, event)
-            
-            return {
-                "message": "PR event handled", 
-                "num_files": len(codebase.files), 
-                "num_functions": len(codebase.functions)
-            }
+            try:
+                # Get the repository name
+                repo_name = f"{event.repository.owner.login}/{event.repository.name}"
+                
+                # Initialize the codebase
+                codebase = self.codebase_analyzer.get_codebase(repo_name)
+                logger.info(f"Codebase: {codebase.name} codebase.repo: {codebase.repo_path}")
+                
+                # Check out commit
+                logger.info("> Checking out commit")
+                codebase.checkout(commit=event.pull_request.head.sha)
+                
+                # Analyze the PR
+                logger.info("> Analyzing PR")
+                self.analyze_pr(codebase, event)
+                
+                return {
+                    "message": "PR event handled", 
+                    "num_files": len(codebase.files), 
+                    "num_functions": len(codebase.functions)
+                }
+            except Exception as e:
+                logger.error(f"Error handling PR event: {str(e)}")
+                return {"error": str(e)}
     
     def analyze_pr(self, codebase: Codebase, event: PullRequestLabeledEvent):
         """
@@ -271,119 +310,37 @@ class PRAgent:
                 
         return False
     
-    def extract_repo_info(self, text: str) -> Tuple[str, str, str]:
+    def _extract_repo_name_from_text(self, text: str) -> str:
         """
-        Extract repository information from the text.
+        Extract repository name from text.
         
         Args:
             text: The message text
             
         Returns:
-            A tuple containing (org_name, repo_name, full_repo_name)
+            The repository name
         """
         # Try to extract repository information using regex
         repo_pattern = r"(?:in|for|to|on|at)\s+(?:the\s+)?(?:repo(?:sitory)?|project)?\s*[\"']?([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\"']?"
-        repo_match = re.search(repo_pattern, text)
+        repo_match = re.search(repo_pattern, text, re.IGNORECASE)
         
         if repo_match:
-            full_repo_name = repo_match.group(1)
-            parts = full_repo_name.split('/')
-            if len(parts) == 2:
-                org_name, repo_name = parts
-                return org_name, repo_name, full_repo_name
+            return repo_match.group(1)
         
-        # If no match, try to extract just the repo name
-        repo_name_pattern = r"(?:in|for|to|on|at)\s+(?:the\s+)?(?:repo(?:sitory)?|project)?\s*[\"']?([a-zA-Z0-9_.-]+)[\"']?"
-        repo_name_match = re.search(repo_name_pattern, text)
-        
-        if repo_name_match:
-            repo_name = repo_name_match.group(1)
-            if self.default_org:
-                return self.default_org, repo_name, f"{self.default_org}/{repo_name}"
-        
-        # If still no match, use default values
+        # If no match, use the default repository
         if self.default_org and self.default_repo:
-            return self.default_org, self.default_repo, f"{self.default_org}/{self.default_repo}"
+            return f"{self.default_org}/{self.default_repo}"
         
-        # Use LLM to extract repository information
-        try:
-            agent = create_chat_agent(
-                model_provider=self.model_provider,
-                model_name=self.model_name
-            )
-            
-            prompt = f"""
-            Extract the repository name from the following text:
-            
-            {text}
-            
-            Return the result as a JSON object with the following structure:
-            {{
-                "org": "organization_name",
-                "repo": "repository_name"
-            }}
-            
-            If the organization name is not explicitly mentioned, use "default" as the organization name.
-            If the repository name is not explicitly mentioned, use "default" as the repository name.
-            """
-            
-            response = agent.invoke(prompt)
-            
-            # Try to parse the response as JSON
-            try:
-                result = json.loads(response)
-                org_name = result.get("org", "default")
-                repo_name = result.get("repo", "default")
-                
-                if org_name == "default" and self.default_org:
-                    org_name = self.default_org
-                
-                if repo_name == "default" and self.default_repo:
-                    repo_name = self.default_repo
-                
-                return org_name, repo_name, f"{org_name}/{repo_name}"
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON response: {response}")
-        except Exception as e:
-            logger.error(f"Error extracting repository information: {str(e)}")
-        
-        # Fallback to default values
-        if self.default_org and self.default_repo:
-            return self.default_org, self.default_repo, f"{self.default_org}/{self.default_repo}"
-        
-        # If all else fails, return empty values
-        return "", "", ""
-    
-    def extract_change_details(self, text: str) -> str:
-        """
-        Extract change details from the text.
-        
-        Args:
-            text: The message text
-            
-        Returns:
-            The extracted change details
-        """
-        # Remove PR creation request patterns
-        for pattern in self.pr_patterns:
-            text = pattern.sub("", text, count=1)
-        
-        # Remove repository information
-        repo_pattern = r"(?:in|for|to|on|at)\s+(?:the\s+)?(?:repo(?:sitory)?|project)?\s*[\"']?([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)?)[\"']?"
-        text = re.sub(repo_pattern, "", text)
-        
-        # Clean up the text
-        text = text.strip()
-        
-        return text
+        # If no default repository, return a placeholder
+        return "default_repo"
     
     async def process_pr_creation_request_async(
-        self,
-        text: str,
-        user_id: str,
-        channel_id: str,
+        self, 
+        text: str, 
+        user_id: str, 
+        channel_id: str, 
         thread_ts: str,
-        say_callback
+        say_callback: Callable[[str, str], Any]
     ) -> Dict[str, Any]:
         """
         Process a PR creation request asynchronously.
@@ -398,15 +355,79 @@ class PRAgent:
         Returns:
             A dictionary containing the result of the PR creation
         """
-        return self.process_pr_creation_request(text, user_id, channel_id, thread_ts, say_callback)
+        try:
+            # Extract repository and change details
+            repo_name, change_details = self.codebase_analyzer.extract_repo_and_changes(text)
+            
+            # If the repository is "default_repo", use the default repository
+            if repo_name == "default_repo" and self.default_org and self.default_repo:
+                repo_name = f"{self.default_org}/{self.default_repo}"
+            
+            # Send an update
+            say_callback(
+                text=self.response_formatter.format_loading_message(f"Analyzing the repository '{repo_name}'"),
+                thread_ts=thread_ts
+            )
+            
+            # Analyze the codebase
+            analysis = self.codebase_analyzer.analyze_codebase(repo_name)
+            
+            # Send an update
+            say_callback(
+                text=self.response_formatter.format_loading_message(f"Generating changes based on your request"),
+                thread_ts=thread_ts
+            )
+            
+            # Generate changes
+            changes = self.codebase_analyzer.generate_changes(repo_name, change_details)
+            
+            # Check if there was an error
+            if "error" in changes:
+                error_message = changes.get("error", "Unknown error")
+                say_callback(
+                    text=self.response_formatter.format_error_response(f"Error generating changes: {error_message}"),
+                    thread_ts=thread_ts
+                )
+                return {"error": error_message}
+            
+            # Send an update
+            say_callback(
+                text=self.response_formatter.format_loading_message(f"Creating a PR with the generated changes"),
+                thread_ts=thread_ts
+            )
+            
+            # Create the PR
+            pr_result = self.github_handler.create_pr(repo_name, changes, user_id)
+            
+            # Check if there was an error
+            if "error" in pr_result:
+                error_message = pr_result.get("error", "Unknown error")
+                say_callback(
+                    text=self.response_formatter.format_error_response(f"Error creating PR: {error_message}"),
+                    thread_ts=thread_ts
+                )
+                return {"error": error_message}
+            
+            # Format and send the response
+            response = self.response_formatter.format_pr_creation_response(pr_result)
+            say_callback(text=response, thread_ts=thread_ts)
+            
+            return pr_result
+        except Exception as e:
+            logger.error(f"Error processing PR creation request: {str(e)}")
+            say_callback(
+                text=self.response_formatter.format_error_response(f"Error processing PR creation request: {str(e)}"),
+                thread_ts=thread_ts
+            )
+            return {"error": str(e)}
     
     def process_pr_creation_request(
-        self,
-        text: str,
-        user_id: str,
-        channel_id: str,
+        self, 
+        text: str, 
+        user_id: str, 
+        channel_id: str, 
         thread_ts: str,
-        say_callback
+        say_callback: Callable[[Dict[str, Any]], Any]
     ) -> Dict[str, Any]:
         """
         Process a PR creation request.
@@ -421,62 +442,70 @@ class PRAgent:
         Returns:
             A dictionary containing the result of the PR creation
         """
-        logger.info(f"Processing PR creation request from user {user_id}")
-        
         try:
-            # Extract repository information
-            org_name, repo_name, full_repo_name = self.extract_repo_info(text)
+            # Extract repository and change details
+            repo_name, change_details = self.codebase_analyzer.extract_repo_and_changes(text)
             
-            if not full_repo_name:
-                error_message = "Could not determine the repository. Please specify the repository name in your request."
-                say_callback(text=error_message, thread_ts=thread_ts)
-                return {"error": error_message}
-            
-            # Extract change details
-            change_details = self.extract_change_details(text)
-            
-            if not change_details:
-                error_message = "Could not determine what changes to make. Please provide more details in your request."
-                say_callback(text=error_message, thread_ts=thread_ts)
-                return {"error": error_message}
+            # If the repository is "default_repo", use the default repository
+            if repo_name == "default_repo" and self.default_org and self.default_repo:
+                repo_name = f"{self.default_org}/{self.default_repo}"
             
             # Send an update
             say_callback(
-                text=f"I'm analyzing the repository `{full_repo_name}` and generating changes based on your request...",
+                text=self.response_formatter.format_loading_message(f"Analyzing the repository '{repo_name}'"),
                 thread_ts=thread_ts
             )
             
-            # Analyze the codebase and generate changes
-            changes = self.codebase_analyzer.generate_changes(full_repo_name, change_details)
+            # Analyze the codebase
+            analysis = self.codebase_analyzer.analyze_codebase(repo_name)
+            
+            # Send an update
+            say_callback(
+                text=self.response_formatter.format_loading_message(f"Generating changes based on your request"),
+                thread_ts=thread_ts
+            )
+            
+            # Generate changes
+            changes = self.codebase_analyzer.generate_changes(repo_name, change_details)
             
             # Check if there was an error
             if "error" in changes:
                 error_message = changes.get("error", "Unknown error")
-                say_callback(text=f"I encountered an error while analyzing the codebase: {error_message}", thread_ts=thread_ts)
-                return changes
+                say_callback(
+                    text=self.response_formatter.format_error_response(f"Error generating changes: {error_message}"),
+                    thread_ts=thread_ts
+                )
+                return {"error": error_message}
             
             # Send an update
-            say_callback(text=f"I've generated the changes and I'm creating a PR...", thread_ts=thread_ts)
+            say_callback(
+                text=self.response_formatter.format_loading_message(f"Creating a PR with the generated changes"),
+                thread_ts=thread_ts
+            )
             
-            # Create the PR using the GitHub handler
-            pr_result = self.github_handler.create_pr(full_repo_name, changes, user_id)
+            # Create the PR
+            pr_result = self.github_handler.create_pr(repo_name, changes, user_id)
             
             # Check if there was an error
             if "error" in pr_result:
                 error_message = pr_result.get("error", "Unknown error")
-                say_callback(text=f"I encountered an error while creating the PR: {error_message}", thread_ts=thread_ts)
-                return pr_result
+                say_callback(
+                    text=self.response_formatter.format_error_response(f"Error creating PR: {error_message}"),
+                    thread_ts=thread_ts
+                )
+                return {"error": error_message}
             
             # Format and send the response
             response = self.response_formatter.format_pr_creation_response(pr_result)
             say_callback(text=response, thread_ts=thread_ts)
             
             return pr_result
-            
         except Exception as e:
             logger.error(f"Error processing PR creation request: {str(e)}")
-            error_message = f"I encountered an error while processing your PR creation request: {str(e)}"
-            say_callback(text=error_message, thread_ts=thread_ts)
+            say_callback(
+                text=self.response_formatter.format_error_response(f"Error processing PR creation request: {str(e)}"),
+                thread_ts=thread_ts
+            )
             return {"error": str(e)}
     
     def handle_app_mention(self, event: Dict[str, Any], say_callback) -> Dict[str, Any]:
@@ -696,7 +725,7 @@ class PRAgentEventsMixin:
             # Check if this is a Codegen label
             if label_name == "Codegen":
                 # Initialize the codebase
-                codebase = Codebase.from_repo(f"{org}/{repo}", github_token=self.github_token)
+                codebase = self.codebase_analyzer.get_codebase(f"{org}/{repo}")
                 
                 # Check out the PR head
                 head_sha = pr.get("head", {}).get("sha")
@@ -743,7 +772,7 @@ class PRAgentEventsMixin:
         # Handle different actions
         if action == "created":
             # Initialize the codebase
-            codebase = Codebase.from_repo(f"{org}/{repo}", github_token=self.github_token)
+            codebase = self.codebase_analyzer.get_codebase(f"{org}/{repo}")
             
             return {
                 "message": "Issue event handled", 
