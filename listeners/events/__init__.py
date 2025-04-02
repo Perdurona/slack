@@ -1,6 +1,5 @@
 from slack_bolt import App
 from .app_home_opened import app_home_opened_callback
-from .app_mentioned import app_mentioned_callback
 from .app_messaged import app_messaged_callback
 from .file_shared import file_shared_callback
 from .voice_message import handle_voice_message
