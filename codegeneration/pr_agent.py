@@ -40,7 +40,7 @@ from codegen.extensions.langchain.tools import (
     SemanticEditTool,
     ViewFileTool,
 )
-from codegen.extensions.tools.github.create_pr import create_pr
+from codegen.extensions.tools.github.create_pr import create_pr, CreatePRObservation
 from codegen.git.repo_operator.repo_operator import RepoOperator
 from codegen.sdk.code_generation.prompts.api_docs import (
     get_docstrings_for_classes,

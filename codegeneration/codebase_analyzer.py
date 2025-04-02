@@ -116,6 +116,7 @@ class CodebaseAnalyzer:
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
         self.codebase_cache = {}
         self.codegen_app = codegen_app
+        self.codebase = None  # Default SDK codebase
         
         # Initialize the default codebase if specified in environment
         default_repo = os.environ.get("DEFAULT_REPO")
@@ -178,7 +179,7 @@ class CodebaseAnalyzer:
     
     def run_this_on_startup(self):
         """
-        Initialize the default codebase on startup.
+        Initialize the default SDK codebase on startup.
         """
         default_sdk_repo = os.environ.get("DEFAULT_SDK_REPO", "codegen-sh/codegen-sdk")
         if default_sdk_repo:
