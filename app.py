@@ -46,6 +46,15 @@ if default_sdk_repo:
     except Exception as e:
         logging.error(f"Failed to initialize SDK codebase: {e}")
 
+# Parse the repository if specified
+if codegen_app.repo:
+    try:
+        logging.info(f"Parsing repository: {codegen_app.repo}")
+        codegen_app.parse_repo()
+        logging.info(f"Successfully parsed repository: {codegen_app.repo}")
+    except Exception as e:
+        logging.error(f"Failed to parse repository: {e}")
+
 # Register listeners (excluding app_mention which is handled by PR Agent)
 register_listeners(slack_app)
 
