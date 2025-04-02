@@ -42,10 +42,45 @@ from codegen.sdk.code_generation.prompts.api_docs import (
     get_language_specific_docstring,
     get_codegen_sdk_docs
 )
+from codegen.configs.models.codebase import CodebaseConfig
+from codegen.configs.models.secrets import SecretsConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+def create_codebase(repo_name: str, language: ProgrammingLanguage = ProgrammingLanguage.PYTHON):
+    """
+    Create a Codebase instance for a GitHub repository.
+    
+    Args:
+        repo_name: Repository name in format "owner/repo"
+        language: Programming language of the repository
+        
+    Returns:
+        A Codebase instance
+    """
+    logger.info(f"Creating codebase for {repo_name}")
+    
+    config = CodebaseConfig(sync_enabled=True)
+    secrets = SecretsConfig(
+        github_token=os.environ.get("GITHUB_TOKEN"),
+        linear_api_key=os.environ.get("LINEAR_API_KEY")
+    )
+    
+    # Create a temporary directory for the codebase
+    tmp_dir = tempfile.mkdtemp()
+    
+    # Create the codebase
+    codebase = Codebase.from_repo(
+        repo_full_name=repo_name,
+        language=language,
+        tmp_dir=tmp_dir,
+        config=config,
+        secrets=secrets
+    )
+    
+    return codebase
 
 class CodebaseAnalyzer:
     """
@@ -73,6 +108,15 @@ class CodebaseAnalyzer:
         self.model_name = model_name
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
         self.codebase_cache = {}
+        
+        # Initialize the default codebase if specified in environment
+        default_repo = os.environ.get("DEFAULT_REPO")
+        if default_repo:
+            try:
+                logger.info(f"Initializing default codebase: {default_repo}")
+                self.get_codebase(default_repo)
+            except Exception as e:
+                logger.error(f"Failed to initialize default codebase: {e}")
     
     def get_codebase(self, repo_name: str) -> Codebase:
         """
@@ -85,6 +129,7 @@ class CodebaseAnalyzer:
             A Codebase instance
         """
         if repo_name in self.codebase_cache:
+            logger.info(f"Using cached codebase for {repo_name}")
             return self.codebase_cache[repo_name]
         
         logger.info(f"Creating new codebase for {repo_name}")
@@ -105,21 +150,26 @@ class CodebaseAnalyzer:
             # Default to Python
             language = ProgrammingLanguage.PYTHON
         
-        # Create a temporary directory for the codebase
-        tmp_dir = tempfile.mkdtemp()
-        
         # Create the codebase
-        codebase = Codebase.from_repo(
-            repo_full_name=repo_name,
-            language=language,
-            tmp_dir=tmp_dir,
-            github_token=self.github_token
-        )
+        codebase = create_codebase(repo_name, language)
         
         # Cache the codebase
         self.codebase_cache[repo_name] = codebase
         
         return codebase
+    
+    def run_this_on_startup(self):
+        """
+        Initialize the default codebase on startup.
+        """
+        default_sdk_repo = os.environ.get("DEFAULT_SDK_REPO", "codegen-sh/codegen-sdk")
+        if default_sdk_repo:
+            try:
+                logger.info(f"Initializing SDK codebase: {default_sdk_repo}")
+                self.codebase = create_codebase(default_sdk_repo, ProgrammingLanguage.PYTHON)
+                logger.info(f"Successfully initialized SDK codebase")
+            except Exception as e:
+                logger.error(f"Failed to initialize SDK codebase: {e}")
     
     def analyze_repository(self, repo_name: str, request_text: str) -> Dict[str, Any]:
         """
@@ -177,27 +227,27 @@ class CodebaseAnalyzer:
                 "analysis": {{
                     "summary": "Brief summary of the repository",
                     "key_findings": ["finding1", "finding2", ...],
-                    "dependencies": ["dependency1", "dependency2", ...]
-                }},
-                "modification_plan": {{
-                    "files_to_modify": [
-                        {{
-                            "path": "path/to/file1",
-                            "reason": "Reason for modification",
-                            "suggested_changes": "Description of changes"
-                        }},
-                        ...
-                    ],
-                    "files_to_create": [
-                        {{
-                            "path": "path/to/new_file",
-                            "purpose": "Purpose of the new file",
-                            "content_description": "Description of the content"
-                        }},
-                        ...
-                    ],
-                    "files_to_delete": ["path/to/file_to_delete", ...],
-                    "implementation_steps": ["step1", "step2", ...]
+                    "dependencies": ["dependency1", "dependency2", ...],
+                    "modification_plan": {{
+                        "files_to_modify": [
+                            {{
+                                "path": "path/to/file1",
+                                "reason": "Reason for modification",
+                                "suggested_changes": "Description of changes"
+                            }},
+                            ...
+                        ],
+                        "files_to_create": [
+                            {{
+                                "path": "path/to/new_file",
+                                "purpose": "Purpose of the new file",
+                                "content_description": "Description of the content"
+                            }},
+                            ...
+                        ],
+                        "files_to_delete": ["path/to/file_to_delete", ...],
+                        "implementation_steps": ["step1", "step2", ...]
+                    }}
                 }}
             }}
             """

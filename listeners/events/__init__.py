@@ -20,3 +20,5 @@ def register(app: App):
     
     # Register thread message handler for continuing conversations
     app.event("message", middleware=[lambda body, context, next: "thread_ts" in body["event"] and next()])(handle_thread_message)
+    
+    # Note: app_mention event is handled by the PR Agent in codegeneration/pr_agent.py
