@@ -9,7 +9,6 @@ from ..commands.thread_chat import handle_thread_message
 
 def register(app: App):
     app.event("app_home_opened")(app_home_opened_callback)
-    app.event("app_mention")(app_mentioned_callback)
     app.event("message")(app_messaged_callback)
     app.event("file_shared")(file_shared_callback)
     
