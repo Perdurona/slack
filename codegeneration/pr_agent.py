@@ -106,7 +106,8 @@ class PRAgent:
         self.codebase_analyzer = CodebaseAnalyzer(
             model_provider=model_provider,
             model_name=model_name,
-            github_token=github_token
+            github_token=github_token,
+            codegen_app=codegen_app
         )
         self.github_handler = GitHubHandler(github_token=github_token)
         self.response_formatter = ResponseFormatter()
