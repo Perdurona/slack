@@ -1,13 +1,14 @@
 """
-Codebase Analyzer for analyzing repositories and generating changes.
+Codebase Analyzer for analyzing GitHub repositories.
 
-This module provides the CodebaseAnalyzer class that uses Codegen's tools
-to analyze repositories and generate code changes based on user requests.
+This module provides the CodebaseAnalyzer class that analyzes GitHub repositories
+and generates changes based on user requests.
 """
 
-import json
 import logging
 import os
+import re
+import json
 from typing import Dict, Any, List, Optional, Tuple
 
 from codegen import CodeAgent, Codebase
@@ -47,347 +48,269 @@ logger = logging.getLogger(__name__)
 
 class CodebaseAnalyzer:
     """
-    Analyzer for codebases that generates changes based on user requests.
+    Analyzer for GitHub repositories.
     
-    This class uses Codegen's tools to analyze repositories and generate
-    code changes based on user requests.
+    This class analyzes GitHub repositories and generates changes based on user requests.
+    It uses Codegen's tools to understand the repository structure and generate code changes.
     """
     
     def __init__(
         self,
         model_provider: str = "anthropic",
         model_name: str = "claude-3-5-sonnet-latest",
-        github_token: Optional[str] = None,
-        language: ProgrammingLanguage = ProgrammingLanguage.PYTHON
+        github_token: Optional[str] = None
     ):
         """
-        Initialize the CodebaseAnalyzer.
+        Initialize the Codebase Analyzer.
         
         Args:
-            model_provider: The model provider to use (anthropic or openai)
-            model_name: The name of the model to use
+            model_provider: Model provider (anthropic or openai)
+            model_name: Model name to use
             github_token: GitHub API token (optional)
-            language: The programming language of the codebase
         """
         self.model_provider = model_provider
         self.model_name = model_name
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
-        self.language = language
-        self.codebase_cache = {}
-        
-    def get_codebase(self, repo_name: str) -> Codebase:
-        """
-        Get a codebase instance for a repository.
-        
-        This method caches codebase instances to avoid re-initializing them
-        for the same repository.
-        
-        Args:
-            repo_name: The name of the repository
-            
-        Returns:
-            A codebase instance
-        """
-        if repo_name in self.codebase_cache:
-            logger.info(f"Using cached codebase for {repo_name}")
-            return self.codebase_cache[repo_name]
-        
-        logger.info(f"Initializing codebase for {repo_name}")
-        try:
-            # Try to initialize from repo
-            codebase = Codebase.from_repo(
-                repo_name, 
-                language=self.language.value, 
-                github_token=self.github_token
-            )
-            self.codebase_cache[repo_name] = codebase
-            return codebase
-        except Exception as e:
-            logger.error(f"Error initializing codebase from repo: {str(e)}")
-            
-            # Try to initialize from local path
-            try:
-                # Check if the repo name is a local path
-                if os.path.exists(repo_name):
-                    codebase = Codebase(repo_name, language=self.language.value)
-                    self.codebase_cache[repo_name] = codebase
-                    return codebase
-                
-                # Try to find the repo in common locations
-                common_locations = [
-                    os.path.join(os.getcwd(), repo_name),
-                    os.path.join(os.path.expanduser("~"), repo_name),
-                    os.path.join("/tmp", repo_name)
-                ]
-                
-                for location in common_locations:
-                    if os.path.exists(location):
-                        codebase = Codebase(location, language=self.language.value)
-                        self.codebase_cache[repo_name] = codebase
-                        return codebase
-                
-                # If all else fails, create a new codebase
-                codebase = Codebase(repo_name, language=self.language.value)
-                self.codebase_cache[repo_name] = codebase
-                return codebase
-            except Exception as e2:
-                logger.error(f"Error initializing codebase from local path: {str(e2)}")
-                raise Exception(f"Failed to initialize codebase: {str(e)}, {str(e2)}")
     
-    def analyze_codebase(self, repo_name: str) -> Dict[str, Any]:
+    def analyze_repository(self, repo_name: str, request_text: str) -> Dict[str, Any]:
         """
-        Analyze a codebase to understand its structure and dependencies.
+        Analyze a GitHub repository.
         
         Args:
-            repo_name: The name of the repository
+            repo_name: The repository name (org/repo)
+            request_text: The user's request text
             
         Returns:
             A dictionary containing the analysis results
         """
-        logger.info(f"Analyzing codebase: {repo_name}")
-        
         try:
-            # Initialize the codebase
-            codebase = self.get_codebase(repo_name)
+            logger.info(f"Analyzing repository: {repo_name}")
             
-            # Create an inspector agent
-            agent = create_codebase_inspector_agent(
-                codebase,
+            # Initialize the codebase
+            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
+            
+            # Create an agent with tools for analyzing the codebase
+            tools = [
+                ListDirectoryTool(codebase),
+                ViewFileTool(codebase),
+                RipGrepTool(codebase),
+                RevealSymbolTool(codebase)
+            ]
+            
+            agent = CodeAgent(
+                codebase=codebase,
                 model_provider=self.model_provider,
-                model_name=self.model_name
+                model_name=self.model_name,
+                tools=tools
             )
             
-            # Analyze the codebase
+            # Create a prompt for analyzing the repository
             prompt = f"""
-            Analyze the codebase and provide a summary of its structure, including:
+            Analyze this repository: {repo_name}
             
-            1. Main modules and their purposes
-            2. Key classes and functions
-            3. Dependencies between components
-            4. Overall architecture
+            The user has requested: "{request_text}"
             
-            Return the analysis as a JSON object with the following structure:
+            Please analyze the repository structure and identify the key components that would need to be modified to fulfill this request.
+            
+            Provide a detailed analysis including:
+            1. Key files and directories
+            2. Important classes and functions
+            3. Dependencies and relationships
+            4. Potential areas that need modification
+            
+            Format your response as a JSON object with the following structure:
             {{
-                "modules": [
-                    {{
-                        "name": "module_name",
-                        "purpose": "module_purpose",
-                        "key_components": ["component1", "component2"]
-                    }}
-                ],
-                "key_classes": [
-                    {{
-                        "name": "class_name",
-                        "purpose": "class_purpose",
-                        "methods": ["method1", "method2"]
-                    }}
-                ],
-                "key_functions": [
-                    {{
-                        "name": "function_name",
-                        "purpose": "function_purpose"
-                    }}
-                ],
-                "dependencies": [
-                    {{
-                        "from": "component1",
-                        "to": "component2",
-                        "type": "dependency_type"
-                    }}
-                ],
-                "architecture": "description_of_architecture"
+                "repository_structure": {{
+                    "key_files": ["file1", "file2", ...],
+                    "key_directories": ["dir1", "dir2", ...],
+                    "key_components": ["component1", "component2", ...]
+                }},
+                "analysis": {{
+                    "summary": "Brief summary of the repository",
+                    "key_findings": ["finding1", "finding2", ...],
+                    "dependencies": ["dependency1", "dependency2", ...]
+                }},
+                "modification_plan": {{
+                    "files_to_modify": [
+                        {{
+                            "path": "path/to/file1",
+                            "reason": "Reason for modification",
+                            "suggested_changes": "Description of changes"
+                        }},
+                        ...
+                    ],
+                    "files_to_create": [
+                        {{
+                            "path": "path/to/new_file",
+                            "purpose": "Purpose of the new file",
+                            "content_description": "Description of the content"
+                        }},
+                        ...
+                    ],
+                    "files_to_delete": ["path/to/file_to_delete", ...],
+                    "implementation_steps": ["step1", "step2", ...]
+                }}
             }}
             """
             
-            response = agent.invoke(prompt)
+            # Run the agent
+            response = agent.run(prompt)
             
+            # Parse the JSON response
             try:
-                # Parse the JSON response
-                analysis = json.loads(response)
-                logger.info(f"Codebase analysis completed")
-                return analysis
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON response: {response}")
-                # Return the raw response
-                return {"raw_analysis": response}
+                # Extract JSON from the response
+                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    json_str = response
                 
+                # Clean up the JSON string
+                json_str = re.sub(r'```.*?```', '', json_str, flags=re.DOTALL)
+                
+                # Parse the JSON
+                analysis_result = json.loads(json_str)
+                
+                return {
+                    "status": "success",
+                    "repository": repo_name,
+                    "analysis": analysis_result
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                return {
+                    "status": "error",
+                    "error": f"Failed to parse analysis result: {e}",
+                    "repository": repo_name,
+                    "raw_response": response
+                }
+            
         except Exception as e:
-            logger.error(f"Error analyzing codebase: {str(e)}")
-            return {"error": str(e)}
+            logger.error(f"Error analyzing repository: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "repository": repo_name
+            }
     
-    def generate_changes(self, repo_name: str, change_details: str) -> Dict[str, Any]:
+    def generate_changes(self, repo_name: str, request_text: str, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate code changes based on the repository and change details.
+        Generate changes for a GitHub repository based on the analysis.
         
         Args:
-            repo_name: The name of the repository
-            change_details: Description of the changes to make
+            repo_name: The repository name (org/repo)
+            request_text: The user's request text
+            analysis_result: The analysis result from analyze_repository
             
         Returns:
             A dictionary containing the generated changes
         """
-        logger.info(f"Generating changes for repo: {repo_name}")
-        logger.info(f"Change details: {change_details}")
-        
         try:
+            logger.info(f"Generating changes for repository: {repo_name}")
+            
             # Initialize the codebase
-            codebase = self.get_codebase(repo_name)
+            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
             
-            # Get codebase documentation to enhance context
-            codebase_docs = get_codebase_docstring(codebase, self.language)
-            
-            # Create tools for the agent
+            # Create an agent with tools for modifying the codebase
             tools = [
+                ListDirectoryTool(codebase),
+                ViewFileTool(codebase),
+                RipGrepTool(codebase),
+                RevealSymbolTool(codebase),
                 CreateFileTool(codebase),
                 DeleteFileTool(codebase),
                 EditFileTool(codebase),
-                ListDirectoryTool(codebase),
                 MoveSymbolTool(codebase),
                 RenameFileTool(codebase),
                 ReplacementEditTool(codebase),
-                RevealSymbolTool(codebase),
-                SearchTool(codebase),
-                SemanticEditTool(codebase),
-                ViewFileTool(codebase)
+                SemanticEditTool(codebase)
             ]
             
-            # Create a codebase agent with the tools
-            agent = create_codebase_agent(
-                codebase,
+            agent = CodeAgent(
+                codebase=codebase,
                 model_provider=self.model_provider,
                 model_name=self.model_name,
-                additional_tools=tools
+                tools=tools
             )
             
-            # Generate the changes based on the change details
+            # Extract the modification plan from the analysis
+            modification_plan = analysis_result.get("analysis", {}).get("modification_plan", {})
+            
+            # Create a prompt for generating changes
             prompt = f"""
-            You are an expert software engineer tasked with implementing the following changes:
+            Generate changes for repository: {repo_name}
             
-            {change_details}
+            The user has requested: "{request_text}"
             
-            Codebase information:
-            {codebase_docs}
+            Based on the analysis, the following modifications are needed:
+            {json.dumps(modification_plan, indent=2)}
             
-            First, analyze the codebase to understand its structure and identify the files that need to be modified.
-            Then, implement the requested changes using the available tools.
+            Please generate the necessary changes to fulfill the user's request.
             
-            Return your changes as a JSON object with the following structure:
+            For each file that needs to be modified, provide:
+            1. The file path
+            2. The content before modification
+            3. The content after modification
+            
+            For each new file that needs to be created, provide:
+            1. The file path
+            2. The complete content of the file
+            
+            Format your response as a JSON object with the following structure:
             {{
+                "pr_title": "Title for the PR",
+                "pr_description": "Description for the PR",
+                "commit_message": "Commit message",
                 "files_modified": [
                     {{
-                        "path": "path/to/file.py",
-                        "action": "create|modify|delete",
-                        "content": "new file content or changes"
-                    }}
-                ],
-                "commit_message": "Brief description of the changes",
-                "pr_title": "Title for the PR",
-                "pr_description": "Detailed description of the changes for the PR"
+                        "path": "path/to/file",
+                        "action": "modify|create|delete",
+                        "content": "New content of the file"
+                    }},
+                    ...
+                ]
             }}
             """
             
-            response = agent.invoke(prompt)
+            # Run the agent
+            response = agent.run(prompt)
             
+            # Parse the JSON response
             try:
-                # Parse the JSON response
-                changes = json.loads(response)
-                logger.info(f"Generated changes: {changes}")
-                return changes
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON response: {response}")
-                # Fallback to simple changes
-                return {
-                    "files_modified": [],
-                    "commit_message": f"Changes based on: {change_details}",
-                    "pr_title": f"Automated PR: {change_details[:50]}...",
-                    "pr_description": f"This PR implements the following changes:\n\n{change_details}"
-                }
+                # Extract JSON from the response
+                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    json_str = response
                 
+                # Clean up the JSON string
+                json_str = re.sub(r'```.*?```', '', json_str, flags=re.DOTALL)
+                
+                # Parse the JSON
+                changes = json.loads(json_str)
+                
+                return {
+                    "status": "success",
+                    "repository": repo_name,
+                    "pr_title": changes.get("pr_title", f"Automated PR: {request_text[:50]}..."),
+                    "pr_description": changes.get("pr_description", f"This PR was automatically created based on the request: {request_text}"),
+                    "commit_message": changes.get("commit_message", f"Automated commit: {request_text[:50]}..."),
+                    "files_modified": changes.get("files_modified", [])
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                return {
+                    "status": "error",
+                    "error": f"Failed to parse changes: {e}",
+                    "repository": repo_name,
+                    "raw_response": response
+                }
+            
         except Exception as e:
             logger.error(f"Error generating changes: {str(e)}")
             return {
+                "status": "error",
                 "error": str(e),
-                "files_modified": [],
-                "commit_message": f"Changes based on: {change_details}",
-                "pr_title": f"Automated PR: {change_details[:50]}...",
-                "pr_description": f"This PR implements the following changes:\n\n{change_details}"
+                "repository": repo_name
             }
-    
-    def extract_code_from_text(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract code blocks from text.
-        
-        Args:
-            text: The text containing code blocks
-            
-        Returns:
-            A list of dictionaries containing the extracted code blocks
-        """
-        import re
-        
-        # Extract code blocks
-        code_blocks = []
-        code_block_pattern = r"```(?:(\w+)\n)?(.*?)```"
-        matches = re.finditer(code_block_pattern, text, re.DOTALL)
-        
-        for match in matches:
-            language = match.group(1) or "text"
-            code = match.group(2).strip()
-            code_blocks.append({
-                "language": language,
-                "code": code
-            })
-        
-        return code_blocks
-    
-    def detect_programming_language(self, repo_name: str) -> ProgrammingLanguage:
-        """
-        Detect the programming language of a repository.
-        
-        Args:
-            repo_name: The name of the repository
-            
-        Returns:
-            The detected programming language
-        """
-        try:
-            # Initialize the codebase
-            codebase = self.get_codebase(repo_name)
-            
-            # Count file extensions
-            extension_counts = {}
-            for file in codebase.files:
-                ext = os.path.splitext(file.filepath)[1].lower()
-                if ext:
-                    extension_counts[ext] = extension_counts.get(ext, 0) + 1
-            
-            # Map extensions to languages
-            extension_to_language = {
-                ".py": ProgrammingLanguage.PYTHON,
-                ".js": ProgrammingLanguage.JAVASCRIPT,
-                ".ts": ProgrammingLanguage.TYPESCRIPT,
-                ".jsx": ProgrammingLanguage.JAVASCRIPT,
-                ".tsx": ProgrammingLanguage.TYPESCRIPT,
-                ".java": ProgrammingLanguage.JAVA,
-                ".go": ProgrammingLanguage.GO,
-                ".rb": ProgrammingLanguage.RUBY,
-                ".php": ProgrammingLanguage.PHP,
-                ".c": ProgrammingLanguage.C,
-                ".cpp": ProgrammingLanguage.CPP,
-                ".cs": ProgrammingLanguage.CSHARP,
-                ".swift": ProgrammingLanguage.SWIFT,
-                ".kt": ProgrammingLanguage.KOTLIN,
-                ".rs": ProgrammingLanguage.RUST
-            }
-            
-            # Find the most common language
-            most_common_ext = max(extension_counts.items(), key=lambda x: x[1])[0] if extension_counts else None
-            
-            if most_common_ext and most_common_ext in extension_to_language:
-                return extension_to_language[most_common_ext]
-            
-            # Default to Python
-            return ProgrammingLanguage.PYTHON
-        except Exception as e:
-            logger.error(f"Error detecting programming language: {str(e)}")
-            return ProgrammingLanguage.PYTHON

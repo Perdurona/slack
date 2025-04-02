@@ -21,15 +21,11 @@ pr_agent = PRAgent(
     model_provider=os.environ.get("CODEGEN_MODEL_PROVIDER", "anthropic"),
     model_name=os.environ.get("CODEGEN_MODEL_NAME", "claude-3-5-sonnet-latest"),
     default_repo=os.environ.get("DEFAULT_REPO"),
-    default_org=os.environ.get("DEFAULT_ORG")
+    default_org=os.environ.get("DEFAULT_ORG"),
+    slack_app=app  # Pass the Slack app instance to the PR Agent
 )
 
-# Register PR Agent event handler
-@app.event("app_mention")
-def handle_app_mention(event, say):
-    pr_agent.handle_app_mention(event, say)
-
-# Register Listeners
+# Register listeners (excluding app_mention which is handled by PR Agent)
 register_listeners(app)
 
 # Start Bolt app
