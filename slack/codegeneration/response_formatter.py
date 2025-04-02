@@ -6,6 +6,7 @@ for Slack messages.
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 # Configure logging
@@ -39,17 +40,18 @@ class ResponseFormatter:
         pr_url = pr_result.get("pr_url")
         pr_title = pr_result.get("pr_title")
         user = pr_result.get("user")
+        repo = pr_result.get("repo", "")
         files_modified = pr_result.get("files_modified", [])
         
         # Format the file modifications
         file_modifications = self._format_file_modifications(files_modified)
         
         # Format the message
-        message = f""":tada: *PR Created Successfully!* :tada:
+        message = f""":rocket: *PR Created Successfully!* :rocket:
 
 <@{user}>, I've created a new Pull Request for you:
 
-*<{pr_url}|#{pr_number}: {pr_title}>*
+*<{pr_url}|#{pr_number}: {pr_title}>* in `{repo}`
 
 *Changes:*
 {file_modifications}
@@ -132,6 +134,7 @@ Please try again or contact an administrator if the problem persists."""
         pr_url = pr_result.get("pr_url")
         pr_title = pr_result.get("pr_title")
         user = pr_result.get("user")
+        repo = pr_result.get("repo", "")
         files_modified = pr_result.get("files_modified", [])
         
         # Format the file modifications
@@ -142,7 +145,7 @@ Please try again or contact an administrator if the problem persists."""
 
 <@{user}>, I've updated the Pull Request for you:
 
-*<{pr_url}|#{pr_number}: {pr_title}>*
+*<{pr_url}|#{pr_number}: {pr_title}>* in `{repo}`
 
 *Changes:*
 {file_modifications}
@@ -226,3 +229,136 @@ You can review the updated PR using the link above."""
 {architecture or "No architecture information available."}"""
         
         return message
+    
+    def format_pr_details_response(self, pr_details: Dict[str, Any]) -> str:
+        """
+        Format a PR details response.
+        
+        Args:
+            pr_details: The PR details
+            
+        Returns:
+            A formatted response string
+        """
+        if "error" in pr_details:
+            return self.format_error_response(pr_details["error"])
+        
+        # Extract PR details
+        pr_number = pr_details.get("pr_number")
+        pr_url = pr_details.get("pr_url")
+        pr_title = pr_details.get("pr_title")
+        pr_body = pr_details.get("pr_body", "")
+        head_branch = pr_details.get("head_branch")
+        base_branch = pr_details.get("base_branch")
+        state = pr_details.get("state")
+        user = pr_details.get("user")
+        repo = pr_details.get("repo", "")
+        created_at = pr_details.get("created_at")
+        updated_at = pr_details.get("updated_at")
+        mergeable = pr_details.get("mergeable")
+        
+        # Format the message
+        message = f"""*PR Details:*
+
+*<{pr_url}|#{pr_number}: {pr_title}>* in `{repo}`
+
+*State:* {state.capitalize() if state else "Unknown"}
+*Created by:* {user}
+*Created at:* {created_at}
+*Updated at:* {updated_at}
+*Head branch:* `{head_branch}`
+*Base branch:* `{base_branch}`
+*Mergeable:* {":white_check_mark:" if mergeable else ":x:"}
+
+*Description:*
+```
+{pr_body}
+```"""
+        
+        return message
+    
+    def format_merge_result_response(self, merge_result: Dict[str, Any]) -> str:
+        """
+        Format a merge result response.
+        
+        Args:
+            merge_result: The merge result
+            
+        Returns:
+            A formatted response string
+        """
+        if "error" in merge_result:
+            return self.format_error_response(merge_result["error"])
+        
+        # Extract merge details
+        pr_number = merge_result.get("pr_number")
+        repo = merge_result.get("repo", "")
+        merged = merge_result.get("merged", False)
+        message = merge_result.get("message", "")
+        sha = merge_result.get("sha", "")
+        
+        # Format the message
+        if merged:
+            response = f""":tada: *PR Merged Successfully!* :tada:
+
+PR #{pr_number} in `{repo}` has been merged.
+
+*Commit SHA:* `{sha}`
+*Message:* {message}"""
+        else:
+            response = f""":warning: *PR Merge Failed* :warning:
+
+PR #{pr_number} in `{repo}` could not be merged.
+
+*Message:* {message}"""
+        
+        return response
+    
+    def format_help_message(self) -> str:
+        """
+        Format a help message.
+        
+        Returns:
+            A formatted help message string
+        """
+        message = """*PR Creation Bot Help*
+
+I can help you create and manage Pull Requests directly from Slack. Here are some examples of what you can ask me:
+
+• `@bot create a PR to add error handling to the login component in the user-service repository`
+• `@bot make a pull request to fix the bug in the authentication service`
+• `@bot submit a PR to update the documentation in the api repository`
+
+You can also specify the repository explicitly:
+• `@bot create a PR in org/repo to add a new feature`
+
+For more complex changes, you can provide more details:
+• `@bot create a PR to implement the following changes: 1. Add error handling to the login component, 2. Update the error messages, 3. Add tests for the error cases`
+
+If you have any questions or need help, feel free to ask!"""
+        
+        return message
+    
+    def extract_code_blocks(self, text: str) -> List[Dict[str, str]]:
+        """
+        Extract code blocks from text.
+        
+        Args:
+            text: The text containing code blocks
+            
+        Returns:
+            A list of dictionaries containing the extracted code blocks
+        """
+        code_blocks = []
+        code_block_pattern = r"```(?:(\w+)\n)?(.*?)```"
+        matches = re.finditer(code_block_pattern, text, re.DOTALL)
+        
+        for match in matches:
+            language = match.group(1) or "text"
+            code = match.group(2).strip()
+            code_blocks.append({
+                "language": language,
+                "code": code
+            })
+        
+        return code_blocks

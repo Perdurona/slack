@@ -1,15 +1,15 @@
 # Codegen PR Creation Agent
 
-This module integrates the Slack bot with Codegen's powerful code analysis and PR creation capabilities. It allows users to request PR creation directly from Slack, with the bot analyzing repositories, generating code changes, and submitting PRs automatically.
+This module provides a Slack bot that can create GitHub Pull Requests based on natural language requests. It uses Codegen's powerful tools to analyze repositories, generate code changes, and create PRs.
 
 ## Architecture
 
-The integration consists of four main components:
+The PR Creation Agent consists of four main components:
 
-1. **PR Agent**: Coordinates the workflow between Slack, Codegen, and GitHub
-2. **Codebase Analyzer**: Analyzes repositories and generates code changes
-3. **GitHub Handler**: Creates and manages PRs
-4. **Response Formatter**: Formats responses for Slack
+1. **PR Agent**: The main coordinator that handles Slack events and PR creation workflow
+2. **Codebase Analyzer**: Analyzes codebases and generates changes using Codegen's tools
+3. **GitHub Handler**: Creates and manages PRs using Codegen's GitHub tools
+4. **Response Formatter**: Formats responses for Slack messages
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -37,38 +37,43 @@ The integration consists of four main components:
                     └─────────────────┘
 ```
 
-## Key Components
+## Components
 
-### 1. PR Agent (`pr_agent.py`)
+### PR Agent (`pr_agent.py`)
 
-The main entry point for PR creation requests. It:
-- Detects PR creation requests from Slack messages
-- Extracts repository and change details
-- Coordinates the workflow between components
-- Handles error cases and provides feedback
+The PR Agent is the main coordinator that handles Slack events and PR creation workflow. It:
 
-### 2. Codebase Analyzer (`codebase_analyzer.py`)
+- Detects PR creation requests using pattern matching
+- Extracts repository and change details from user messages
+- Coordinates the workflow between the Codebase Analyzer and GitHub Handler
+- Provides feedback to users at each step of the process
 
-Analyzes codebases and generates changes. It:
-- Uses Codegen's tools to analyze repositories
-- Extracts code structure and dependencies
-- Generates appropriate code changes
-- Provides context for PR descriptions
+### Codebase Analyzer (`codebase_analyzer.py`)
 
-### 3. GitHub Handler (`github_handler.py`)
+The Codebase Analyzer uses Codegen's tools to analyze repositories and generate code changes. It:
 
-Creates and manages PRs. It:
+- Initializes codebases from repositories or local paths
+- Analyzes codebase structure and dependencies
+- Generates code changes based on user requests
+- Detects programming languages and adapts accordingly
+
+### GitHub Handler (`github_handler.py`)
+
+The GitHub Handler creates and manages PRs using Codegen's GitHub tools. It:
+
 - Creates branches for changes
 - Applies changes to files
 - Creates PRs with appropriate titles and descriptions
-- Handles PR comments and updates
+- Adds comments to PRs and updates existing PRs
 
-### 4. Response Formatter (`response_formatter.py`)
+### Response Formatter (`response_formatter.py`)
 
-Formats responses for Slack. It:
-- Creates well-formatted messages with links and code blocks
-- Provides status updates during the PR creation process
-- Formats error messages when things go wrong
+The Response Formatter formats responses for Slack messages. It:
+
+- Formats PR creation responses with emojis and formatting
+- Formats error messages with clear explanations
+- Formats codebase analysis results with structured information
+- Provides help messages and other utility formatting
 
 ## Usage
 
@@ -79,25 +84,47 @@ Users can request PR creation by mentioning the bot with a message like:
 ```
 
 The bot will:
+
 1. Acknowledge the request
 2. Analyze the repository
-3. Generate appropriate changes
-4. Create a PR
+3. Generate the requested changes
+4. Create a PR with the changes
 5. Provide a link to the PR
-
-## Implementation Details
-
-The implementation uses:
-- Codegen's `CodeAgent` for code analysis and generation
-- Codegen's GitHub tools for PR creation and management
-- Slack Bolt for Slack integration
-- FastAPI for webhook handling
 
 ## Configuration
 
 The module requires the following environment variables:
+
 - `GITHUB_TOKEN`: GitHub API token
 - `SLACK_BOT_TOKEN`: Slack bot token
 - `SLACK_APP_TOKEN`: Slack app token
 - `CODEGEN_MODEL_PROVIDER`: Model provider (anthropic or openai)
 - `CODEGEN_MODEL_NAME`: Model name to use
+- `DEFAULT_REPO`: Default repository name (optional)
+- `DEFAULT_ORG`: Default organization name (optional)
+
+## Integration with Codegen
+
+This module integrates with Codegen's powerful tools:
+
+- **Codebase**: Represents a codebase and provides methods for analyzing and modifying it
+- **CodeAgent**: Agent for interacting with a codebase
+- **Langchain Tools**: Tools for manipulating files and code
+- **GitHub Tools**: Tools for creating PRs, viewing PRs, and adding comments
+
+## Advanced Features
+
+- **Dynamic Repository Initialization**: Automatically detects and initializes repositories
+- **Programming Language Detection**: Detects the programming language of a repository
+- **Codebase Caching**: Caches codebase instances to avoid re-initializing them
+- **Error Handling**: Robust error handling for all operations
+- **PR Update Support**: Supports updating existing PRs with new changes
+- **PR Merging**: Supports merging PRs directly from Slack
+
+## Future Enhancements
+
+1. **Repository Selection**: Support for multiple repositories
+2. **Branch Management**: Custom base and head branches
+3. **PR Template Customization**: Organization-specific templates
+4. **PR Review and Updates**: Request reviews and update existing PRs
+5. **Linear Integration**: Link PRs to Linear tickets

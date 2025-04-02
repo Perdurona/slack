@@ -57,7 +57,8 @@ class CodebaseAnalyzer:
         self,
         model_provider: str = "anthropic",
         model_name: str = "claude-3-5-sonnet-latest",
-        github_token: Optional[str] = None
+        github_token: Optional[str] = None,
+        language: ProgrammingLanguage = ProgrammingLanguage.PYTHON
     ):
         """
         Initialize the CodebaseAnalyzer.
@@ -66,11 +67,73 @@ class CodebaseAnalyzer:
             model_provider: The model provider to use (anthropic or openai)
             model_name: The name of the model to use
             github_token: GitHub API token (optional)
+            language: The programming language of the codebase
         """
         self.model_provider = model_provider
         self.model_name = model_name
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
+        self.language = language
+        self.codebase_cache = {}
         
+    def get_codebase(self, repo_name: str) -> Codebase:
+        """
+        Get a codebase instance for a repository.
+        
+        This method caches codebase instances to avoid re-initializing them
+        for the same repository.
+        
+        Args:
+            repo_name: The name of the repository
+            
+        Returns:
+            A codebase instance
+        """
+        if repo_name in self.codebase_cache:
+            logger.info(f"Using cached codebase for {repo_name}")
+            return self.codebase_cache[repo_name]
+        
+        logger.info(f"Initializing codebase for {repo_name}")
+        try:
+            # Try to initialize from repo
+            codebase = Codebase.from_repo(
+                repo_name, 
+                language=self.language.value, 
+                github_token=self.github_token
+            )
+            self.codebase_cache[repo_name] = codebase
+            return codebase
+        except Exception as e:
+            logger.error(f"Error initializing codebase from repo: {str(e)}")
+            
+            # Try to initialize from local path
+            try:
+                # Check if the repo name is a local path
+                if os.path.exists(repo_name):
+                    codebase = Codebase(repo_name, language=self.language.value)
+                    self.codebase_cache[repo_name] = codebase
+                    return codebase
+                
+                # Try to find the repo in common locations
+                common_locations = [
+                    os.path.join(os.getcwd(), repo_name),
+                    os.path.join(os.path.expanduser("~"), repo_name),
+                    os.path.join("/tmp", repo_name)
+                ]
+                
+                for location in common_locations:
+                    if os.path.exists(location):
+                        codebase = Codebase(location, language=self.language.value)
+                        self.codebase_cache[repo_name] = codebase
+                        return codebase
+                
+                # If all else fails, create a new codebase
+                codebase = Codebase(repo_name, language=self.language.value)
+                self.codebase_cache[repo_name] = codebase
+                return codebase
+            except Exception as e2:
+                logger.error(f"Error initializing codebase from local path: {str(e2)}")
+                raise Exception(f"Failed to initialize codebase: {str(e)}, {str(e2)}")
+    
     def analyze_codebase(self, repo_name: str) -> Dict[str, Any]:
         """
         Analyze a codebase to understand its structure and dependencies.
@@ -85,7 +148,7 @@ class CodebaseAnalyzer:
         
         try:
             # Initialize the codebase
-            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
+            codebase = self.get_codebase(repo_name)
             
             # Create an inspector agent
             agent = create_codebase_inspector_agent(
@@ -168,10 +231,10 @@ class CodebaseAnalyzer:
         
         try:
             # Initialize the codebase
-            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
+            codebase = self.get_codebase(repo_name)
             
             # Get codebase documentation to enhance context
-            codebase_docs = get_codebase_docstring(codebase, ProgrammingLanguage.PYTHON)
+            codebase_docs = get_codebase_docstring(codebase, self.language)
             
             # Create tools for the agent
             tools = [
@@ -184,6 +247,7 @@ class CodebaseAnalyzer:
                 ReplacementEditTool(codebase),
                 RevealSymbolTool(codebase),
                 SearchTool(codebase),
+                SemanticEditTool(codebase),
                 ViewFileTool(codebase)
             ]
             
@@ -275,3 +339,55 @@ class CodebaseAnalyzer:
             })
         
         return code_blocks
+    
+    def detect_programming_language(self, repo_name: str) -> ProgrammingLanguage:
+        """
+        Detect the programming language of a repository.
+        
+        Args:
+            repo_name: The name of the repository
+            
+        Returns:
+            The detected programming language
+        """
+        try:
+            # Initialize the codebase
+            codebase = self.get_codebase(repo_name)
+            
+            # Count file extensions
+            extension_counts = {}
+            for file in codebase.files:
+                ext = os.path.splitext(file.filepath)[1].lower()
+                if ext:
+                    extension_counts[ext] = extension_counts.get(ext, 0) + 1
+            
+            # Map extensions to languages
+            extension_to_language = {
+                ".py": ProgrammingLanguage.PYTHON,
+                ".js": ProgrammingLanguage.JAVASCRIPT,
+                ".ts": ProgrammingLanguage.TYPESCRIPT,
+                ".jsx": ProgrammingLanguage.JAVASCRIPT,
+                ".tsx": ProgrammingLanguage.TYPESCRIPT,
+                ".java": ProgrammingLanguage.JAVA,
+                ".go": ProgrammingLanguage.GO,
+                ".rb": ProgrammingLanguage.RUBY,
+                ".php": ProgrammingLanguage.PHP,
+                ".c": ProgrammingLanguage.C,
+                ".cpp": ProgrammingLanguage.CPP,
+                ".cs": ProgrammingLanguage.CSHARP,
+                ".swift": ProgrammingLanguage.SWIFT,
+                ".kt": ProgrammingLanguage.KOTLIN,
+                ".rs": ProgrammingLanguage.RUST
+            }
+            
+            # Find the most common language
+            most_common_ext = max(extension_counts.items(), key=lambda x: x[1])[0] if extension_counts else None
+            
+            if most_common_ext and most_common_ext in extension_to_language:
+                return extension_to_language[most_common_ext]
+            
+            # Default to Python
+            return ProgrammingLanguage.PYTHON
+        except Exception as e:
+            logger.error(f"Error detecting programming language: {str(e)}")
+            return ProgrammingLanguage.PYTHON
