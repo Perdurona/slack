@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import json
+import tempfile
 from typing import Dict, Any, List, Optional, Tuple
 
 from codegen import CodeAgent, Codebase
@@ -71,6 +72,54 @@ class CodebaseAnalyzer:
         self.model_provider = model_provider
         self.model_name = model_name
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
+        self.codebase_cache = {}
+    
+    def get_codebase(self, repo_name: str) -> Codebase:
+        """
+        Get a cached codebase or create a new one.
+        
+        Args:
+            repo_name: The repository name (org/repo)
+            
+        Returns:
+            A Codebase instance
+        """
+        if repo_name in self.codebase_cache:
+            return self.codebase_cache[repo_name]
+        
+        logger.info(f"Creating new codebase for {repo_name}")
+        
+        # Determine the programming language based on the repository
+        # This is a simple heuristic and could be improved
+        if repo_name.endswith(".py") or "python" in repo_name.lower():
+            language = ProgrammingLanguage.PYTHON
+        elif repo_name.endswith(".js") or "javascript" in repo_name.lower() or "node" in repo_name.lower():
+            language = ProgrammingLanguage.JAVASCRIPT
+        elif repo_name.endswith(".ts") or "typescript" in repo_name.lower():
+            language = ProgrammingLanguage.TYPESCRIPT
+        elif repo_name.endswith(".go") or "go" in repo_name.lower():
+            language = ProgrammingLanguage.GO
+        elif repo_name.endswith(".java") or "java" in repo_name.lower():
+            language = ProgrammingLanguage.JAVA
+        else:
+            # Default to Python
+            language = ProgrammingLanguage.PYTHON
+        
+        # Create a temporary directory for the codebase
+        tmp_dir = tempfile.mkdtemp()
+        
+        # Create the codebase
+        codebase = Codebase.from_repo(
+            repo_full_name=repo_name,
+            language=language,
+            tmp_dir=tmp_dir,
+            github_token=self.github_token
+        )
+        
+        # Cache the codebase
+        self.codebase_cache[repo_name] = codebase
+        
+        return codebase
     
     def analyze_repository(self, repo_name: str, request_text: str) -> Dict[str, Any]:
         """
@@ -87,7 +136,7 @@ class CodebaseAnalyzer:
             logger.info(f"Analyzing repository: {repo_name}")
             
             # Initialize the codebase
-            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
+            codebase = self.get_codebase(repo_name)
             
             # Create an agent with tools for analyzing the codebase
             tools = [
@@ -209,7 +258,7 @@ class CodebaseAnalyzer:
             logger.info(f"Generating changes for repository: {repo_name}")
             
             # Initialize the codebase
-            codebase = Codebase.from_repo(repo_name, github_token=self.github_token)
+            codebase = self.get_codebase(repo_name)
             
             # Create an agent with tools for modifying the codebase
             tools = [
