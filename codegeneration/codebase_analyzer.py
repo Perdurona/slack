@@ -33,6 +33,10 @@ from codegen.extensions.langchain.tools import (
     RipGrepTool,
     SemanticEditTool,
     ViewFileTool,
+    GithubCreatePRTool,
+    GithubViewPRTool,
+    GithubCreatePRCommentTool,
+    GithubCreatePRReviewCommentTool
 )
 from codegen.sdk.code_generation.prompts.api_docs import (
     get_docstrings_for_classes,
@@ -44,6 +48,7 @@ from codegen.sdk.code_generation.prompts.api_docs import (
 )
 from codegen.configs.models.codebase import CodebaseConfig
 from codegen.configs.models.secrets import SecretsConfig
+from codegen.extensions.events.codegen_app import CodegenApp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -94,7 +99,8 @@ class CodebaseAnalyzer:
         self,
         model_provider: str = "anthropic",
         model_name: str = "claude-3-5-sonnet-latest",
-        github_token: Optional[str] = None
+        github_token: Optional[str] = None,
+        codegen_app: Optional[CodegenApp] = None
     ):
         """
         Initialize the Codebase Analyzer.
@@ -103,11 +109,13 @@ class CodebaseAnalyzer:
             model_provider: Model provider (anthropic or openai)
             model_name: Model name to use
             github_token: GitHub API token (optional)
+            codegen_app: CodegenApp instance (optional)
         """
         self.model_provider = model_provider
         self.model_name = model_name
         self.github_token = github_token or os.environ.get("GITHUB_TOKEN")
         self.codebase_cache = {}
+        self.codegen_app = codegen_app
         
         # Initialize the default codebase if specified in environment
         default_repo = os.environ.get("DEFAULT_REPO")
@@ -133,6 +141,16 @@ class CodebaseAnalyzer:
             return self.codebase_cache[repo_name]
         
         logger.info(f"Creating new codebase for {repo_name}")
+        
+        # If we have a CodegenApp instance, try to use it
+        if self.codegen_app and hasattr(self.codegen_app, 'get_codebase'):
+            try:
+                codebase = self.codegen_app.get_codebase()
+                self.codebase_cache[repo_name] = codebase
+                return codebase
+            except (KeyError, Exception) as e:
+                logger.warning(f"Could not get codebase from CodegenApp: {e}")
+                # Fall back to creating a new codebase
         
         # Determine the programming language based on the repository
         # This is a simple heuristic and could be improved
@@ -196,11 +214,11 @@ class CodebaseAnalyzer:
                 RevealSymbolTool(codebase)
             ]
             
-            agent = CodeAgent(
+            agent = create_codebase_inspector_agent(
                 codebase=codebase,
                 model_provider=self.model_provider,
                 model_name=self.model_name,
-                tools=tools
+                additional_tools=tools
             )
             
             # Create a prompt for analyzing the repository
@@ -253,16 +271,17 @@ class CodebaseAnalyzer:
             """
             
             # Run the agent
-            response = agent.run(prompt)
+            response = agent.invoke({"input": prompt})
             
             # Parse the JSON response
             try:
                 # Extract JSON from the response
-                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                response_text = response.get("output", "")
+                json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(1)
                 else:
-                    json_str = response
+                    json_str = response_text
                 
                 # Clean up the JSON string
                 json_str = re.sub(r'```.*?```', '', json_str, flags=re.DOTALL)
@@ -281,7 +300,7 @@ class CodebaseAnalyzer:
                     "status": "error",
                     "error": f"Failed to parse analysis result: {e}",
                     "repository": repo_name,
-                    "raw_response": response
+                    "raw_response": response_text
                 }
             
         except Exception as e:
@@ -322,14 +341,18 @@ class CodebaseAnalyzer:
                 MoveSymbolTool(codebase),
                 RenameFileTool(codebase),
                 ReplacementEditTool(codebase),
-                SemanticEditTool(codebase)
+                SemanticEditTool(codebase),
+                GithubCreatePRTool(codebase),
+                GithubViewPRTool(codebase),
+                GithubCreatePRCommentTool(codebase),
+                GithubCreatePRReviewCommentTool(codebase)
             ]
             
-            agent = CodeAgent(
+            agent = create_codebase_agent(
                 codebase=codebase,
                 model_provider=self.model_provider,
                 model_name=self.model_name,
-                tools=tools
+                additional_tools=tools
             )
             
             # Extract the modification plan from the analysis
@@ -372,16 +395,17 @@ class CodebaseAnalyzer:
             """
             
             # Run the agent
-            response = agent.run(prompt)
+            response = agent.invoke({"input": prompt})
             
             # Parse the JSON response
             try:
                 # Extract JSON from the response
-                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                response_text = response.get("output", "")
+                json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(1)
                 else:
-                    json_str = response
+                    json_str = response_text
                 
                 # Clean up the JSON string
                 json_str = re.sub(r'```.*?```', '', json_str, flags=re.DOTALL)
@@ -403,7 +427,7 @@ class CodebaseAnalyzer:
                     "status": "error",
                     "error": f"Failed to parse changes: {e}",
                     "repository": repo_name,
-                    "raw_response": response
+                    "raw_response": response_text
                 }
             
         except Exception as e:
