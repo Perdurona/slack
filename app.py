@@ -7,6 +7,8 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from listeners import register_listeners
 from env_loader import load_environment_variables
 from codegeneration.pr_agent import PRAgent
+from codegeneration.codebase_analyzer import create_codebase
+from codegen.shared.enums.programming_language import ProgrammingLanguage
 
 # Load and normalize environment variables
 load_environment_variables()
@@ -24,6 +26,16 @@ pr_agent = PRAgent(
     default_org=os.environ.get("DEFAULT_ORG"),
     slack_app=app  # Pass the Slack app instance to the PR Agent
 )
+
+# Initialize default codebase if specified
+default_sdk_repo = os.environ.get("DEFAULT_SDK_REPO", "codegen-sh/codegen-sdk")
+if default_sdk_repo:
+    try:
+        logging.info(f"Initializing SDK codebase: {default_sdk_repo}")
+        pr_agent.codebase_analyzer.run_this_on_startup()
+        logging.info(f"Successfully initialized SDK codebase")
+    except Exception as e:
+        logging.error(f"Failed to initialize SDK codebase: {e}")
 
 # Register listeners (excluding app_mention which is handled by PR Agent)
 register_listeners(app)

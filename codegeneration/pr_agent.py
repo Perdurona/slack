@@ -50,8 +50,9 @@ from codegen.sdk.code_generation.prompts.api_docs import (
     get_language_specific_docstring,
     get_codegen_sdk_docs
 )
+from codegen.extensions.events.codegen_app import CodegenApp
 
-from .codebase_analyzer import CodebaseAnalyzer
+from .codebase_analyzer import CodebaseAnalyzer, create_codebase
 from .github_handler import GitHubHandler
 from .response_formatter import ResponseFormatter
 from ai.providers import get_provider_response
@@ -78,7 +79,8 @@ class PRAgent:
         model_name: str = "claude-3-5-sonnet-latest",
         default_repo: str = None,
         default_org: str = None,
-        slack_app: Optional[App] = None
+        slack_app: Optional[App] = None,
+        codegen_app: Optional[CodegenApp] = None
     ):
         """
         Initialize the PR Agent.
@@ -90,6 +92,7 @@ class PRAgent:
             default_repo: Default repository name
             default_org: Default organization name
             slack_app: Slack app instance (optional)
+            codegen_app: CodegenApp instance (optional)
         """
         self.github_token = github_token
         self.model_provider = model_provider
@@ -97,6 +100,7 @@ class PRAgent:
         self.default_repo = default_repo
         self.default_org = default_org
         self.slack_app = slack_app
+        self.codegen_app = codegen_app
         
         # Initialize components
         self.codebase_analyzer = CodebaseAnalyzer(
@@ -106,6 +110,15 @@ class PRAgent:
         )
         self.github_handler = GitHubHandler(github_token=github_token)
         self.response_formatter = ResponseFormatter()
+        
+        # Initialize default codebase if specified
+        if default_repo and default_org:
+            self.default_full_repo = f"{default_org}/{default_repo}"
+            try:
+                logger.info(f"Initializing default codebase: {self.default_full_repo}")
+                self.codebase_analyzer.run_this_on_startup()
+            except Exception as e:
+                logger.error(f"Failed to initialize default codebase: {e}")
         
         # Compile regex patterns for PR creation requests
         self.pr_patterns = [
